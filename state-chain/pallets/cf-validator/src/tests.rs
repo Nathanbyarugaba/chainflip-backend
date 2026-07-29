@@ -2509,6 +2509,117 @@ mod delegation {
 			});
 	}
 
+	// The delegation snapshot for an epoch is taken when the auction resolves, but the
+	// corresponding bond is only applied at the epoch transition, several blocks later. A
+	// delegator who undelegates in between is no longer subject to the `max_bid` reservation, so
+	// they can move their stake out before the bond is applied. The snapshot is not revisited, so
+	// they collect the same reward share as a delegator who backed the epoch for real.
+	#[test]
+	fn delegator_can_withdraw_stake_after_snapshot_and_still_earn_full_rewards() {
+		const OPERATOR: u64 = 123;
+		const HONEST: u64 = 21;
+		const ATTACKER: u64 = 22;
+		const STAKE: u128 = 2000;
+		const REWARD: u128 = 1_000_000;
+
+		new_test_ext()
+			.then_execute_with_checks(|| {
+				assert_ok!(ValidatorPallet::register_as_operator(
+					OriginTrait::signed(OPERATOR),
+					OperatorSettings {
+						fee_bps: DEFAULT_MIN_OPERATOR_FEE,
+						delegation_acceptance: DelegationAcceptance::Allow
+					},
+					vanity()
+				));
+				for delegator in [HONEST, ATTACKER] {
+					MockFlip::credit_funds(&delegator, STAKE);
+					assert_ok!(ValidatorPallet::delegate(
+						OriginTrait::signed(delegator),
+						OPERATOR,
+						DelegationAmount::Max
+					));
+				}
+				for bid in WINNING_BIDS {
+					assert_ok!(ValidatorPallet::claim_validator(
+						OriginTrait::signed(OPERATOR),
+						bid.bidder_id
+					));
+					assert_ok!(ValidatorPallet::accept_operator(
+						OriginTrait::signed(bid.bidder_id),
+						OPERATOR
+					));
+				}
+				set_default_test_bids();
+
+				// While delegating, the pledged stake is locked: it can't be redeemed.
+				for delegator in [HONEST, ATTACKER] {
+					assert_noop!(
+						ValidatorPallet::ensure_can_redeem_amount(&delegator, STAKE),
+						Error::<Test>::StillBidding
+					);
+				}
+
+				ValidatorPallet::start_authority_rotation();
+				assert_rotation_phase_matches!(RotationPhase::KeygensInProgress(..));
+			})
+			.then_execute_at_next_block(|_| {
+				// The auction has resolved, so the snapshot that governs the next epoch's rewards
+				// is now fixed, with both delegators contributing the full stake.
+				let next_epoch = ValidatorPallet::epoch_index() + 1;
+				let snapshot = DelegationSnapshots::<Test>::get(next_epoch, OPERATOR)
+					.expect("snapshot registered at auction resolution");
+				assert_eq!(snapshot.delegators.get(&HONEST), Some(&STAKE));
+				assert_eq!(snapshot.delegators.get(&ATTACKER), Some(&STAKE));
+
+				// The epoch hasn't started yet, so no bond has been applied for the snapshot.
+				// Undelegating removes the only remaining restriction on the attacker's funds...
+				assert_ok!(ValidatorPallet::undelegate(
+					OriginTrait::signed(ATTACKER),
+					DelegationAmount::Max
+				));
+				assert_ok!(ValidatorPallet::ensure_can_redeem_amount(&ATTACKER, STAKE));
+				// ...so the whole stake can leave the account (via redemption or rebalance).
+				assert!(MockFlip::try_debit_funds(&ATTACKER, STAKE).is_some());
+
+				MockKeyRotatorA::keygen_success();
+			})
+			.then_execute_at_next_block(|_| {
+				MockKeyRotatorA::key_handover_success();
+			})
+			.then_execute_at_next_block(|_| {
+				MockKeyRotatorA::keys_activated();
+			})
+			.then_execute_at_next_block(|_| {
+				assert_rotation_phase_matches!(RotationPhase::SessionRotating(..));
+			})
+			.then_execute_at_next_block(|_| {
+				assert_rotation_phase_matches!(RotationPhase::Idle);
+				let epoch = ValidatorPallet::epoch_index();
+
+				// The attacker holds nothing, yet the epoch's snapshot still credits them with
+				// the full stake. Note that `Bonder::update_bond` caps the bond at the account
+				// balance, so nothing was retroactively locked either.
+				assert_eq!(MockFlip::balance(&ATTACKER), 0);
+				let snapshot = DelegationSnapshots::<Test>::get(epoch, OPERATOR)
+					.expect("snapshot carried over to the new epoch");
+				assert_eq!(snapshot.delegators.get(&ATTACKER), Some(&STAKE));
+
+				// The epoch's rewards are split using that stale stake, so the attacker earns
+				// exactly as much as the delegator who actually backed the epoch.
+				let mut settled = BTreeMap::<u64, u128>::new();
+				<DelegatedRewardsDistribution<Test> as cf_traits::RewardsDistribution>::distribute_all(
+					epoch,
+					REWARD,
+					|account, amount| {
+						settled.entry(*account).and_modify(|a| *a += amount).or_insert(amount);
+					},
+				);
+				assert!(settled[&HONEST] > 0);
+				assert_eq!(settled[&ATTACKER], settled[&HONEST]);
+			});
+	}
+
 	#[test]
 	fn can_delegate_with_specific_amount() {
 		new_test_ext().execute_with(|| {

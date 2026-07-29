@@ -475,6 +475,23 @@ fn test_try_debit_from_liquid_funds() {
 	});
 }
 
+#[test]
+fn update_bond_is_capped_at_the_account_balance() {
+	new_test_ext().execute_with(|| {
+		assert_eq!(Flip::total_balance_of(&ALICE), 100);
+
+		// A bond larger than the balance is silently truncated, and is *not* re-applied when the
+		// balance later grows: callers must call `update_bond` again.
+		Bonder::<Test>::update_bond(&ALICE, 150);
+		assert_eq!(<Flip as AccountInfo>::bond(&ALICE), 100);
+
+		Bonder::<Test>::update_bond(&ALICE, 40);
+		Flip::settle(&ALICE, Flip::mint(100).into());
+		assert_eq!(<Flip as AccountInfo>::bond(&ALICE), 40);
+		assert_eq!(<Flip as AccountInfo>::liquid_funds(&ALICE), 160);
+	});
+}
+
 #[cfg(test)]
 mod test_issuance {
 	use super::*;
