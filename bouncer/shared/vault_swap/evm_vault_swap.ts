@@ -4,6 +4,7 @@ import BigNumber from 'bignumber.js';
 import {
   getContractAddress,
   amountToFineAmount,
+  amountToFineAmountBigInt,
   defaultAssetAmounts,
   chainFromAsset,
   assetDecimals,
@@ -18,7 +19,16 @@ import { ChainflipIO, WithBrokerAccount } from 'shared/utils/chainflip_io';
 import { signAndSendTxEvm } from 'shared/send_evm';
 import { ChannelRefundParameters, requestSwapParameterEncoding } from './vault_swap';
 
-const erc20Assets: Asset[] = ['Flip', 'Usdc', 'Usdt', 'Wbtc', 'ArbUsdc', 'ArbUsdt', 'BscUsdt'];
+const erc20Assets: Asset[] = [
+  'Flip',
+  'Usdc',
+  'Usdt',
+  'Wbtc',
+  'Cbbtc',
+  'ArbUsdc',
+  'ArbUsdt',
+  'BscUsdt',
+];
 
 interface EvmVaultSwapDetails {
   chain: 'Ethereum' | 'Arbitrum' | 'Bsc';
@@ -132,7 +142,7 @@ export async function executeEvmVaultSwap<A extends WithBrokerAccount>(
     // eslint-disable-next-line @typescript-eslint/no-use-before-define
     await approveEvmTokenVault(
       sourceAsset,
-      (BigInt(amountToFineAmount(amountToSwap, assetDecimals(sourceAsset))) * 100n).toString(),
+      (amountToFineAmountBigInt(amountToSwap, sourceAsset) * 100n).toString(),
       evmWallet,
     );
   }

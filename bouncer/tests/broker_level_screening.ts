@@ -1,4 +1,5 @@
 import axios from 'axios';
+import type { StateChainRuntimeRuntimeCallLike } from 'generated/chaintypes/chainflip-node';
 import { TestContext } from 'shared/utils/test_context';
 import { globalLogger } from 'shared/utils/logger';
 import { ChainflipIO, fullAccountFromUri, newChainflipIO } from 'shared/utils/chainflip_io';
@@ -119,11 +120,13 @@ async function setWhitelistedBroker<A = []>(cf: ChainflipIO<A>, brokerAddress: U
             api.tx.governance.callAsSudo(
               api.tx.system.setStorage([
                 [
-                  decodeHexStringToByteArray(prefix).concat(Array.from(brokerAddress)),
+                  new Uint8Array(
+                    decodeHexStringToByteArray(prefix).concat(Array.from(brokerAddress)),
+                  ),
                   // Empty, we just need to insert the key.
-                  '',
+                  '0x',
                 ],
-              ]),
+              ]).call as StateChainRuntimeRuntimeCallLike,
             ),
         }),
     ),
@@ -159,6 +162,7 @@ export async function doTestSwapDeposits<A = []>(
     (subcf) => testEvm(subcf, 'Usdt', async (txId) => setTxRiskScore(txId, 9.0)),
     (subcf) => testEvm(subcf, 'Usdc', async (txId) => setTxRiskScore(txId, 9.0)),
     (subcf) => testEvm(subcf, 'Wbtc', async (txId) => setTxRiskScore(txId, 9.0)),
+    (subcf) => testEvm(subcf, 'Cbbtc', async (txId) => setTxRiskScore(txId, 9.0)),
     (subcf) => testEvm(subcf, 'Bnb', async (txId) => setTxRiskScore(txId, 9.0)),
     (subcf) => testEvm(subcf, 'BscUsdt', async (txId) => setTxRiskScore(txId, 9.0)),
     (subcf) =>
@@ -187,6 +191,7 @@ export async function doTestLpDeposits<A = []>(parentCf: ChainflipIO<A>) {
     (subcf) => testEvmLiquidityDeposit(subcf, 'Usdt', async (txId) => setTxRiskScore(txId, 9.0)),
     (subcf) => testEvmLiquidityDeposit(subcf, 'Usdc', async (txId) => setTxRiskScore(txId, 9.0)),
     (subcf) => testEvmLiquidityDeposit(subcf, 'Wbtc', async (txId) => setTxRiskScore(txId, 9.0)),
+    (subcf) => testEvmLiquidityDeposit(subcf, 'Cbbtc', async (txId) => setTxRiskScore(txId, 9.0)),
   ]);
 }
 
@@ -198,6 +203,7 @@ export async function doTestVaultSwaps<A = []>(cf: ChainflipIO<A>) {
     (subcf) => testEvmVaultSwap(subcf, 'Usdc', async (txId) => setTxRiskScore(txId, 9.0)),
     (subcf) => testEvmVaultSwap(subcf, 'Usdt', async (txId) => setTxRiskScore(txId, 9.0)),
     (subcf) => testEvmVaultSwap(subcf, 'Wbtc', async (txId) => setTxRiskScore(txId, 9.0)),
+    (subcf) => testEvmVaultSwap(subcf, 'Cbbtc', async (txId) => setTxRiskScore(txId, 9.0)),
     (subcf) => testSolVaultSwap(subcf, 'Sol', async (txId) => setTxRiskScore(txId, 9.0)),
     (subcf) => testSolVaultSwap(subcf, 'SolUsdc', async (txId) => setTxRiskScore(txId, 9.0)),
     (subcf) => testSolVaultSwap(subcf, 'SolUsdt', async (txId) => setTxRiskScore(txId, 9.0)),

@@ -15,12 +15,11 @@ async function setupKnownAccounts<A = []>(cf: ChainflipIO<A>): Promise<AccountWi
 
   const operatorAccount = await setupAccount(cf, '//Operator_1', AccountRole.Operator);
 
-  const currentAuthorities =
-    (await chainflipApi.query.validator.currentAuthorities()) as unknown as string[];
+  const currentAuthorities = await chainflipApi.query.validator.currentAuthorities();
   if (currentAuthorities.length === 0) {
     throw new Error('No validators found in currentAuthorities');
   }
-  const validatorAccountId = currentAuthorities[0];
+  const validatorAccountId = currentAuthorities[0].address(2112);
 
   return [
     { accountId: createStateChainKeypair('//LP_1').address, role: AccountRole.LiquidityProvider },
@@ -42,7 +41,7 @@ async function testRpcCallForAllAccounts<A = []>(
       cf.info(
         `Calling ${rpcCallname} for account ${account.accountId} with role ${AccountRole[account.role]}`,
       );
-      const result = await chainflipApi.rpc(rpcCallname, account.accountId);
+      const result = await chainflipApi.rpc[rpcCallname](account.accountId);
       cf.debug(
         `result of ${rpcCallname} for account ${account.accountId} with role ${AccountRole[account.role]} is : ${JSON.stringify(result)}`,
       );
@@ -59,11 +58,28 @@ type SupportedAssets = {
   randomAsset: () => AssetAndChain;
 };
 
+// Chains and assets introduced in the current release, and therefore unknown to the runtime
+// on the other side of an upgrade boundary: calling pool RPCs with them would fail there.
+// Set by the upgrade-test workflow; unset outside upgrade tests.
+// Formats: NEW_RELEASED_CHAINS="Bsc,Tron", NEW_RELEASED_ASSETS="Ethereum:CBBTC".
+function parseEnvList(envVar: string | undefined): string[] {
+  return (envVar ?? '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+const newlyReleasedChains = parseEnvList(process.env.NEW_RELEASED_CHAINS);
+const newlyReleasedAssets = parseEnvList(process.env.NEW_RELEASED_ASSETS).map((pair) => {
+  const [chain, asset] = pair.split(':');
+  return { chain, asset };
+});
+
 async function getRuntimeSupportedAssets(): Promise<SupportedAssets> {
   await using chainflipApi = await getChainflipApi();
   // Here we use cf_swapping_environment and parse the result instead of cf_supported_assets, because
   // cf_supported_assets implementation doesn't work at upgrade boundaries
-  const env = (await chainflipApi.rpc('cf_swapping_environment')) as {
+  const env = (await chainflipApi.rpc.cf_swapping_environment()) as {
     network_fees: { regular_network_fee: { rates: Record<string, Record<string, number>> } };
   };
   const rates = env.network_fees.regular_network_fee.rates;
@@ -73,12 +89,9 @@ async function getRuntimeSupportedAssets(): Promise<SupportedAssets> {
   const assets = all.filter(
     (a) =>
       !(a.chain === 'Ethereum' && a.asset === 'USDC') &&
-      a.chain !== 'Assethub' &&
       a.chain !== 'Polkadot' &&
-      // Exclude Bsc at upgrade boundaries: the old runtime doesn't have Bsc
-      // as a valid Asset variant, so calling pool RPCs with Bsc panics it.
-      // TODO: Remove after Bsc is released.
-      a.chain !== 'Bsc',
+      !newlyReleasedChains.includes(a.chain) &&
+      !newlyReleasedAssets.some((n) => n.chain === a.chain && n.asset === a.asset),
   );
   return {
     baseAsset: { chain: 'Ethereum', asset: 'USDC' },
@@ -97,7 +110,7 @@ async function testRpcCallForAssetPair<A = []>(
     cf.info(
       `Calling ${rpcCallName} with asset1=${JSON.stringify(asset1)} asset2=${JSON.stringify(asset2)}`,
     );
-    const result = await chainflipApi.rpc(rpcCallName, asset1, asset2);
+    const result = await chainflipApi.rpc[rpcCallName](asset1, asset2);
     cf.debug(
       `result of ${rpcCallName}(${JSON.stringify(asset1)}, ${JSON.stringify(asset2)}): ${JSON.stringify(result)}`,
     );
@@ -112,7 +125,7 @@ async function testParameterlessRpcCall<A = []>(cf: ChainflipIO<A>, rpcCallName:
   await using chainflipApi = await getChainflipApi();
   try {
     cf.info(`Calling ${rpcCallName}`);
-    const result = await chainflipApi.rpc(rpcCallName);
+    const result = await chainflipApi.rpc[rpcCallName]();
     cf.debug(`result of ${rpcCallName}: ${JSON.stringify(result)}`);
   } catch (e) {
     throw new Error(`${rpcCallName} failed: ${e}`);
@@ -121,8 +134,8 @@ async function testParameterlessRpcCall<A = []>(cf: ChainflipIO<A>, rpcCallName:
 
 async function printNodeAndRuntimeVersions<A = []>(cf: ChainflipIO<A>) {
   await using chainflipApi = await getChainflipApi();
-  const runtimeVersion = await chainflipApi.rpc('state_getRuntimeVersion');
-  const nodeVersion = await chainflipApi.rpc('system_version');
+  const runtimeVersion = await chainflipApi.rpc.state_getRuntimeVersion();
+  const nodeVersion = await chainflipApi.rpc.system_version();
   cf.info('-----------------------------------------------');
   cf.info(`Node version: ${JSON.stringify(nodeVersion)}`);
   cf.info(`Runtime spec version: ${(runtimeVersion as { specVersion: number }).specVersion}`);
