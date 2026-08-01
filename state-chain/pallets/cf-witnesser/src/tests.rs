@@ -776,3 +776,89 @@ fn ensure_witnessed_origin_checks() {
 		);
 	});
 }
+
+/// Defensive anti-theft suite for deposit-crediting via witnessing.
+mod defensive_anti_theft {
+	use super::*;
+
+	/// Sub-threshold coalition cannot forge a dispatch (no forged deposit credit).
+	/// With 3 authorities, success threshold is 2 — a single vote must not dispatch.
+	#[test]
+	fn subthreshold_coalition_cannot_dispatch() {
+		new_test_ext().execute_with(|| {
+			let call = Box::new(RuntimeCall::Dummy(pallet_dummy::Call::<Test>::increment_value {}));
+			let current_epoch = MockEpochInfo::epoch_index();
+			let n = MockEpochInfo::current_authority_count();
+			assert_eq!(n, 3);
+			assert_eq!(cf_utilities::success_threshold_from_share_count(n), 2);
+
+			assert_ok!(Witnesser::witness_at_epoch(
+				RuntimeOrigin::signed(ALISSA),
+				call.clone(),
+				current_epoch
+			));
+			// One vote < success threshold ⇒ no credit / no dispatch.
+			assert_eq!(pallet_dummy::Something::<Test>::get(), None);
+			assert!(!CallHashExecuted::<Test>::contains_key(
+				current_epoch,
+				CallHash(frame_support::Hashable::blake2_256(&*call))
+			));
+		});
+	}
+
+	/// Crossing the threshold dispatches exactly once; further votes do not re-credit.
+	#[test]
+	fn threshold_dispatch_is_idempotent() {
+		new_test_ext().execute_with(|| {
+			let call = Box::new(RuntimeCall::Dummy(pallet_dummy::Call::<Test>::increment_value {}));
+			let current_epoch = MockEpochInfo::epoch_index();
+
+			assert_ok!(Witnesser::witness_at_epoch(
+				RuntimeOrigin::signed(ALISSA),
+				call.clone(),
+				current_epoch
+			));
+			assert_eq!(pallet_dummy::Something::<Test>::get(), None);
+
+			assert_ok!(Witnesser::witness_at_epoch(
+				RuntimeOrigin::signed(BOBSON),
+				call.clone(),
+				current_epoch
+			));
+			assert_eq!(pallet_dummy::Something::<Test>::get(), Some(0u32));
+
+			// Third vote must not re-dispatch / inflate the credited value.
+			assert_ok!(Witnesser::witness_at_epoch(
+				RuntimeOrigin::signed(CHARLEMAGNE),
+				call.clone(),
+				current_epoch
+			));
+			assert_eq!(pallet_dummy::Something::<Test>::get(), Some(0u32));
+		});
+	}
+
+	/// Same authority cannot inflate vote count toward threshold.
+	#[test]
+	fn duplicate_vote_cannot_inflate_toward_threshold() {
+		new_test_ext().execute_with(|| {
+			let call = Box::new(RuntimeCall::Dummy(pallet_dummy::Call::<Test>::increment_value {}));
+			let current_epoch = MockEpochInfo::epoch_index();
+
+			assert_ok!(Witnesser::witness_at_epoch(
+				RuntimeOrigin::signed(ALISSA),
+				call.clone(),
+				current_epoch
+			));
+			assert_noop!(
+				Witnesser::witness_at_epoch(
+					RuntimeOrigin::signed(ALISSA),
+					call.clone(),
+					current_epoch
+				),
+				Error::<Test>::DuplicateWitness
+			);
+			// Still only one distinct vote — below threshold.
+			assert_eq!(pallet_dummy::Something::<Test>::get(), None);
+		});
+	}
+}
