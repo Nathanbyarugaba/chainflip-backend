@@ -455,6 +455,8 @@ pub mod pallet {
 		BroadcastStillPending,
 		/// The broadcast's api call is no longer available.
 		ApiCallUnavailable,
+		/// Only the nominated broadcaster may report failure for the current attempt.
+		NotNominatedBroadcaster,
 	}
 
 	#[pallet::hooks]
@@ -676,6 +678,9 @@ pub mod pallet {
 
 		/// Submitted by the nominated node to signal that they were unable to broadcast the
 		/// transaction.
+		///
+		/// The reporter must be the current nominee for this broadcast attempt. Timeouts still
+		/// attribute failure to the nominee via `on_initialize` without using this extrinsic.
 		#[pallet::call_index(4)]
 		#[pallet::weight((T::WeightInfo::transaction_failed(), DispatchClass::Operational))]
 		pub fn transaction_failed(
@@ -683,8 +688,14 @@ pub mod pallet {
 			broadcast_id: BroadcastId,
 		) -> DispatchResult {
 			let reporter = T::AccountRoleRegistry::ensure_validator(origin.clone())?;
+			let reporter_id: T::ValidatorId = reporter.into();
 
-			Self::handle_broadcast_failure(broadcast_id, reporter.into())?;
+			let broadcast_data = AwaitingBroadcast::<T, I>::get(broadcast_id)
+				.ok_or(Error::<T, I>::InvalidBroadcastId)?;
+			let nominee = broadcast_data.nominee.ok_or(Error::<T, I>::NotNominatedBroadcaster)?;
+			ensure!(reporter_id == nominee, Error::<T, I>::NotNominatedBroadcaster);
+
+			Self::handle_broadcast_failure(broadcast_id, reporter_id)?;
 			Ok(())
 		}
 

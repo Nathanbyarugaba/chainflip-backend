@@ -120,6 +120,44 @@ fn check_threshold_calculation() {
 	assert_eq!(failure_threshold_from_share_count(4), 2);
 }
 
+/// Differential test against the formal models in
+/// `formal-verification/{fstar,lean}/…Threshold*`.
+/// Pins the Rust implementations to the formulas those proofs verify:
+///   threshold(n) = 0 if n=0 else (2n-1)/3
+///   success(n)   = threshold(n)+1
+///   failure(n)   = n - threshold(n)
+#[test]
+fn threshold_matches_formal_model() {
+	for n in 0u32..=1000 {
+		let expected_threshold = if n == 0 { 0 } else { (2 * n - 1) / 3 };
+		assert_eq!(
+			threshold_from_share_count(n),
+			expected_threshold,
+			"threshold mismatch at n={n}"
+		);
+		assert_eq!(
+			success_threshold_from_share_count(n),
+			expected_threshold.saturating_add(1),
+			"success mismatch at n={n}"
+		);
+		assert_eq!(
+			failure_threshold_from_share_count(n),
+			n - expected_threshold,
+			"failure mismatch at n={n}"
+		);
+		// Security bounds used by the proofs (for n ≥ 1).
+		if n >= 1 {
+			let succ = success_threshold_from_share_count(n);
+			assert!(succ > n / 2, "success must be a strict majority at n={n}");
+			assert!(succ <= n, "success must not exceed n at n={n}");
+			assert!(
+				threshold_from_share_count(n) < succ,
+				"threshold must be strictly below success at n={n}"
+			);
+		}
+	}
+}
+
 use core::mem::MaybeUninit;
 
 struct PartialArray<T, const N: usize> {

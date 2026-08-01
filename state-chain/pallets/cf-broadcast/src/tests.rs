@@ -167,6 +167,19 @@ fn assert_broadcast_storage_cleaned_up(broadcast_id: BroadcastId) {
 	assert!(!PendingBroadcasts::<Test, Instance1>::get().contains(&broadcast_id))
 }
 
+/// Current nominated broadcaster for a live attempt (must report failure via extrinsic).
+fn current_nominee(broadcast_id: BroadcastId) -> ValidatorId {
+	AwaitingBroadcast::<Test, Instance1>::get(broadcast_id)
+		.expect("broadcast awaiting nomination")
+		.nominee
+		.expect("nominee assigned")
+}
+
+fn report_failure_as_nominee(broadcast_id: BroadcastId) {
+	let nominee = current_nominee(broadcast_id);
+	assert_ok!(Broadcaster::transaction_failed(RuntimeOrigin::signed(nominee), broadcast_id));
+}
+
 fn start_mock_broadcast(
 	mock_sig: <MockEthereumChainCrypto as ChainCrypto>::ThresholdSignature,
 ) -> BroadcastId {
@@ -1063,7 +1076,7 @@ fn broadcast_retry_delay_works() {
 			// With no delay, retries are added to the normal queue, and is retried in the next
 			// block.
 			let next_block = System::block_number() + 1;
-			assert_ok!(Broadcaster::transaction_failed(RuntimeOrigin::signed(0u64), broadcast_id));
+			report_failure_as_nominee(broadcast_id);
 			assert!(DelayedBroadcastRetryQueue::<Test, Instance1>::get(next_block)
 				.contains(&broadcast_id));
 			System::assert_last_event(RuntimeEvent::Broadcaster(Event::BroadcastRetryScheduled {
@@ -1076,7 +1089,7 @@ fn broadcast_retry_delay_works() {
 		.then_execute_with(|broadcast_id| {
 			BroadcastFailureRetryDelay::set(Some(delay));
 			// Set delay - retries will be added to the Delayed queue.
-			assert_ok!(Broadcaster::transaction_failed(RuntimeOrigin::signed(1u64), broadcast_id));
+			report_failure_as_nominee(broadcast_id);
 			target = System::block_number() + delay;
 
 			let next_block = System::block_number() + 1;
@@ -1200,7 +1213,7 @@ fn aborted_broadcasts_will_not_retry() {
 			let broadcast_id = start_mock_broadcast(SIG1);
 			BroadcastFailureRetryDelay::set(Some(delay));
 			target = System::block_number() + delay;
-			assert_ok!(Broadcaster::transaction_failed(RuntimeOrigin::signed(0u64), broadcast_id));
+			report_failure_as_nominee(broadcast_id);
 			assert!(
 				DelayedBroadcastRetryQueue::<Test, Instance1>::get(target).contains(&broadcast_id,)
 			);
@@ -1233,7 +1246,7 @@ fn succeeded_broadcasts_will_not_retry() {
 			let broadcast_id = start_mock_broadcast(SIG1);
 			BroadcastFailureRetryDelay::set(Some(delay));
 			target = System::block_number() + delay;
-			assert_ok!(Broadcaster::transaction_failed(RuntimeOrigin::signed(0u64), broadcast_id));
+			report_failure_as_nominee(broadcast_id);
 			assert!(
 				DelayedBroadcastRetryQueue::<Test, Instance1>::get(target).contains(&broadcast_id)
 			);
@@ -1277,7 +1290,7 @@ fn broadcast_retries_will_not_be_overwritten_during_safe_mode() {
 		.then_execute_at_block(1_000u64, |_| {
 			let broadcast_id = start_mock_broadcast(SIG1);
 			BroadcastFailureRetryDelay::set(Some(1));
-			assert_ok!(Broadcaster::transaction_failed(RuntimeOrigin::signed(0u64), broadcast_id));
+			report_failure_as_nominee(broadcast_id);
 
 			// On safe mode next block, storage will be re-added to this target block.
 			let next_block = System::block_number() + 1u64;
@@ -1687,4 +1700,120 @@ fn threshold_sign_and_broadcast_with_historical_key_requires_governance() {
 			sp_runtime::traits::BadOrigin
 		);
 	});
+}
+
+/// Defensive anti-theft suite: assert theft-relevant transitions fail closed.
+/// These are not exploit PoCs — they lock secure behaviour under the mock runtime.
+mod defensive_anti_theft {
+	use super::*;
+
+	/// CF-SEC-006: a non-nominee validator must not be able to report broadcast failure
+	/// (which would otherwise let a coalition abort healthy egress / force resign paths).
+	#[test]
+	fn non_nominee_cannot_report_broadcast_failure() {
+		new_test_ext().execute_with(|| {
+			let broadcast_id = start_mock_broadcast(SIG1);
+			let nominee = current_nominee(broadcast_id);
+			let stranger = MockEpochInfo::current_authorities()
+				.into_iter()
+				.find(|id| *id != nominee)
+				.expect("need a second authority");
+
+			assert_noop!(
+				Broadcaster::transaction_failed(RuntimeOrigin::signed(stranger), broadcast_id),
+				Error::<Test, Instance1>::NotNominatedBroadcaster
+			);
+
+			// Failure set must remain empty — stranger report was rejected.
+			assert!(FailedBroadcasters::<Test, Instance1>::get(broadcast_id).is_empty());
+			assert!(PendingBroadcasts::<Test, Instance1>::get().contains(&broadcast_id));
+		});
+	}
+
+	/// Nominee can still report failure (liveness preserved).
+	#[test]
+	fn nominee_can_report_broadcast_failure() {
+		new_test_ext().execute_with(|| {
+			let broadcast_id = start_mock_broadcast(SIG1);
+			let nominee = current_nominee(broadcast_id);
+			assert_ok!(Broadcaster::transaction_failed(
+				RuntimeOrigin::signed(nominee),
+				broadcast_id
+			));
+			assert!(FailedBroadcasters::<Test, Instance1>::get(broadcast_id).contains(&nominee));
+		});
+	}
+
+	/// Success path is at most once: after cleanup, a second success with the same
+	/// out-id cannot fire another outcome (no double outflow / double debit).
+	#[test]
+	fn transaction_succeeded_at_most_once() {
+		new_test_ext().execute_with(|| {
+			let broadcast_id = start_mock_broadcast(SIG1);
+			assert_ok!(Broadcaster::transaction_succeeded(
+				RuntimeOrigin::root(),
+				SIG1,
+				Default::default(),
+				ETH_TX_FEE,
+				MOCK_TX_METADATA,
+				1,
+			));
+			assert_broadcast_storage_cleaned_up(broadcast_id);
+
+			// Second success with the same out-id must fail closed.
+			assert_noop!(
+				Broadcaster::transaction_succeeded(
+					RuntimeOrigin::root(),
+					SIG1,
+					Default::default(),
+					ETH_TX_FEE,
+					MOCK_TX_METADATA,
+					2,
+				),
+				Error::<Test, Instance1>::InvalidPayload
+			);
+
+			let successes = MockBroadcastOutcomeHandler::<MockEthereum>::take_outcomes()
+				.into_iter()
+				.filter(|o| matches!(o, MockBroadcastOutcome::Success { .. }))
+				.count();
+			assert_eq!(successes, 1, "success outcome must fire at most once");
+		});
+	}
+
+	/// Abort then success (late landing) still cleans up once — not two success outcomes.
+	#[test]
+	fn aborted_then_succeeded_is_single_outcome() {
+		new_test_ext().execute_with(|| {
+			let broadcast_id = start_mock_broadcast(SIG1);
+			let nominee = ready_to_abort_broadcast(broadcast_id);
+			assert_ok!(Broadcaster::transaction_failed(
+				RuntimeOrigin::signed(nominee),
+				broadcast_id
+			));
+			assert!(AbortedBroadcasts::<Test, Instance1>::get().contains(&broadcast_id));
+
+			assert_ok!(Broadcaster::transaction_succeeded(
+				RuntimeOrigin::root(),
+				SIG1,
+				Default::default(),
+				ETH_TX_FEE,
+				MOCK_TX_METADATA,
+				9,
+			));
+			assert_broadcast_storage_cleaned_up(broadcast_id);
+
+			assert_noop!(
+				Broadcaster::transaction_succeeded(
+					RuntimeOrigin::root(),
+					SIG1,
+					Default::default(),
+					ETH_TX_FEE,
+					MOCK_TX_METADATA,
+					10,
+				),
+				Error::<Test, Instance1>::InvalidPayload
+			);
+		});
+	}
 }

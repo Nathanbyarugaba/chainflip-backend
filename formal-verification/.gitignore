@@ -1,0 +1,7 @@
+# F* build artifacts
+fstar/*.checked
+fstar/*.hints
+fstar/.cache
+
+# Lean / Lake build artifacts (packages are fetched by `lake update`)
+lean/.lake/
