@@ -14,9 +14,9 @@ From `REPORT.md` §2 / §7:
 |---|---|---|
 | AMM swap loop / LP fee accounting | Out of scope | **Closed (abstract)** — `AmmSwapConservation.tla` + Verus fee-reduction bounds |
 | Elections / ExactValue consensus | Out of scope | **Closed** — `ExactValueConsensus.tla` + Verus `success_threshold` uniqueness |
-| Lending repay / liquidation conservation | Out of scope | **Closed (core repay)** — `LendingRepay.tla` |
+| Lending repay / liquidation conservation | Out of scope | **Closed** — `LendingRepay.tla` + interest coupling `LendingInterestRepay.tla` |
 | Ingress/egress (beyond boost) | Partial (boost lifecycle done) | Still open for deposit-channel expiry / batching |
-| Tick math (`SqrtPrice::from_tick`) | Stretch | Still open |
+| Tick math (`SqrtPrice::from_tick`) | Stretch | **Closed** — `tick_math.rs` unwrap obligations |
 | Trading strategies / governance / emissions | Out of scope | Still open |
 
 ---
@@ -103,6 +103,28 @@ Remaining risk is outside the models (full tick AMM, interest→owed coupling,
 ingress channel recycle beyond boost).
 
 ---
+
+## 4b. Follow-up closures (this commit)
+
+### Tick math (`verus/src/tick_math.rs`)
+
+Mechanizes the two unwrap obligations in `SqrtPrice::from_tick`:
+
+1. `theorem_checked_mul_no_overflow` / `theorem_u128_const_mul_safe` —
+   `C: u128`, `r ≤ 2^128` ⇒ `C·r < 2^256`.
+2. `theorem_r_nonzero_msb_bound` — `128 + Σ⌊log₂ Cᵢ⌋ − 19·128 = 38 ≥ 0`.
+
+### Lending interest → repay coupling (`LendingInterestRepay.tla`)
+
+| Config | Outcome | Distinct states |
+|---|---|---|
+| `LendingInterestRepay.cfg` | pass (conservation) | 19 772 |
+| `LendingInterestFeeBase.cfg` | **expected fail** | fee-base grows after interest capitalisation |
+
+**Observation (LEND-1):** `repay_via_liquidation` calls `collect_pending_interest()`
+*before* computing `liquidation_fee = rate * min(provided, owed)`, so pending
+interest increases the fee base. Conservation of `provided` still holds; the
+borrower pays a larger fee than on pre-collect owed. Intentional but sharp.
 
 ## 5. Recommended next closures
 

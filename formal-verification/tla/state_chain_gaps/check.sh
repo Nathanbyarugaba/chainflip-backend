@@ -19,10 +19,28 @@ expect_pass() {
 	fi
 }
 
+expect_violation() {
+	local spec="$1" cfg="$2" inv="$3" out
+	out=$(TLC -config "${cfg}" "${spec}" 2>&1) || true
+	if grep -q "Invariant ${inv} is violated" <<<"${out}"; then
+		echo "PASS  ${cfg} (expected violation of ${inv})"
+		pass=$((pass + 1))
+	else
+		echo "FAIL  ${cfg} — expected violation of ${inv}" >&2
+		tail -20 <<<"${out}" >&2
+		fail=$((fail + 1))
+	fi
+}
+
 echo "== Previously-missed state-chain areas =="
 expect_pass AmmSwapConservation.tla AmmSwapConservation.cfg
 expect_pass ExactValueConsensus.tla ExactValueConsensus.cfg
 expect_pass LendingRepay.tla LendingRepay.cfg
+expect_pass LendingInterestRepay.tla LendingInterestRepay.cfg
+
+echo
+echo "== Finding / observation probes =="
+expect_violation LendingInterestRepay.tla LendingInterestFeeBase.cfg FeeNeverGrowsVsPreCollect
 
 echo
 echo "state_chain_gaps/check.sh: ${pass} passed, ${fail} failed"
