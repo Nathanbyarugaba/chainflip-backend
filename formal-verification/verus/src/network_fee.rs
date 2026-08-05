@@ -8,8 +8,12 @@
 //!   - `NetworkFeeTracker::take_fee`          (~line 280)
 //!
 //! `Permill` (rate) is represented as parts-per-million `rate_ppm <= 10^6`;
-//! `Permill * u128` in sp-arithmetic computes floor(x * ppm / 10^6) without
-//! intermediate overflow, which `mul_ppm` reproduces and verifies.
+//! `Permill * u128` in sp-arithmetic computes x * ppm / 10^6 rounded to the
+//! *nearest* integer with ties rounding down (`Rounding::NearestPrefDown`,
+//! substrate per_things.rs), without intermediate overflow. Because 10^6 is
+//! even, that equals floor((x * ppm + 499_999) / 10^6), which `mul_ppm`
+//! reproduces and verifies. (An earlier draft assumed floor rounding; the
+//! differential test in ../conformance caught the discrepancy.)
 //!
 //! Verified properties:
 //!   1. `take_fee` never takes more than it is given, and splits its input
@@ -38,9 +42,13 @@ verus! {
 
 pub const MILLION: u128 = 1_000_000;
 
-/// floor(x * ppm / 10^6) as a spec-level function.
+/// Rounding adjustment for `Rounding::NearestPrefDown`: with an even divisor
+/// M, round-to-nearest-ties-down of v/M equals floor((v + M/2 - 1) / M).
+pub const HALF_ADJ: u128 = 499_999;
+
+/// `Permill::mul`: x * ppm / 10^6 rounded to nearest, ties down.
 pub open spec fn ppm_of(x: int, ppm: int) -> int {
-    (x * ppm) / (MILLION as int)
+    (x * ppm + HALF_ADJ) / (MILLION as int)
 }
 
 /// The lump-sum fee for a total processed amount `total`:
@@ -50,8 +58,9 @@ pub open spec fn lump_sum_fee(total: int, ppm: int, minimum: int) -> int {
     if uncapped <= total { uncapped } else { total }
 }
 
-/// Permill-style multiplication: computes floor(x * ppm / 10^6) without
-/// overflowing u128 (mirrors sp_arithmetic::PerThing's overflow-free `Mul`).
+/// Permill-style multiplication: computes x * ppm / 10^6 rounded to nearest
+/// (ties down) without overflowing u128, mirroring sp_arithmetic::PerThing's
+/// overflow-free `Mul` with `Rounding::NearestPrefDown`.
 pub fn mul_ppm(x: u128, ppm: u32) -> (r: u128)
     requires
         ppm <= MILLION,
@@ -73,22 +82,22 @@ pub fn mul_ppm(x: u128, ppm: u32) -> (r: u128)
             requires 0 <= rem as int <= MILLION as int && 0 <= ppm as int <= MILLION as int;
     }
     let high = q * (ppm as u128);
-    let low = (rem * (ppm as u128)) / MILLION;
+    let low = (rem * (ppm as u128) + HALF_ADJ) / MILLION;
     proof {
-        // (rem * ppm) / M + q * ppm == (rem * ppm + (q * ppm) * M) / M
+        // (rem*ppm + H) / M + q*ppm == (rem*ppm + H + (q*ppm) * M) / M
         lemma_hoist_over_denominator(
-            (rem * ppm) as int,
+            (rem * ppm + HALF_ADJ) as int,
             (q * ppm) as int,
             MILLION as nat,
         );
-        // rem * ppm + (q * ppm) * M == (q * M + rem) * ppm == x * ppm
+        // rem*ppm + (q*ppm) * M == (q*M + rem) * ppm == x * ppm
         assert((rem * ppm) + (q * ppm) * MILLION == (q * MILLION + rem) * ppm) by (nonlinear_arith);
         lemma_ppm_bounds(x as int, ppm as int);
     }
     high + low
 }
 
-/// 0 <= floor(x * ppm / M) <= x for any 0 <= ppm <= M.
+/// 0 <= ppm_of(x, ppm) <= x for any 0 <= ppm <= M.
 proof fn lemma_ppm_bounds(x: int, ppm: int)
     requires
         0 <= x,
@@ -97,14 +106,17 @@ proof fn lemma_ppm_bounds(x: int, ppm: int)
         0 <= ppm_of(x, ppm) <= x,
 {
     let m = MILLION as int;
+    let h = HALF_ADJ as int;
     lemma_mul_nonnegative(x, ppm);
-    lemma_div_is_ordered(0, x * ppm, m);
-    // x * ppm <= x * m, hence floor(x*ppm/m) <= floor(x*m/m) == x.
+    lemma_div_is_ordered(0, x * ppm + h, m);
+    // x*ppm + H <= x*m + (m - 1), hence the rounded quotient is <= x.
     lemma_mul_inequality(ppm, m, x);
     lemma_mul_is_commutative(x, ppm);
     lemma_mul_is_commutative(x, m);
-    lemma_div_is_ordered(x * ppm, x * m, m);
-    lemma_div_multiples_vanish(x, m);
+    lemma_div_is_ordered(x * ppm + h, x * m + (m - 1), m);
+    // (x*m + (m-1)) / m == x: hoist (m-1)/m == 0 over the multiple x*m.
+    lemma_hoist_over_denominator(m - 1, x, m as nat);
+    assert((m - 1) / m == 0);
 }
 
 /// Saturating add, mirroring `u128::saturating_add`.
@@ -259,11 +271,11 @@ proof fn lemma_ppm_monotone(x: int, y: int, ppm: int)
         ppm_of(x, ppm) <= ppm_of(y, ppm),
 {
     lemma_mul_inequality(x, y, ppm);
-    lemma_div_is_ordered(x * ppm, y * ppm, MILLION as int);
+    lemma_div_is_ordered(x * ppm + HALF_ADJ, y * ppm + HALF_ADJ, MILLION as int);
 }
 
 /// The rated fee grows by at most the amount added: for ppm <= 10^6,
-/// floor(ppm*(s+a)/M) <= floor(ppm*s/M) + a.
+/// ppm_of(s + a, ppm) <= ppm_of(s, ppm) + a.
 proof fn lemma_ppm_lipschitz(s: int, a: int, ppm: int)
     requires
         0 <= s,
@@ -273,14 +285,15 @@ proof fn lemma_ppm_lipschitz(s: int, a: int, ppm: int)
         ppm_of(s + a, ppm) <= ppm_of(s, ppm) + a,
 {
     let m = MILLION as int;
+    let h = HALF_ADJ as int;
     // (s+a)*ppm == s*ppm + a*ppm <= s*ppm + a*m
     assert((s + a) * ppm == s * ppm + a * ppm) by (nonlinear_arith);
     lemma_mul_inequality(ppm, m, a);
     lemma_mul_is_commutative(a, ppm);
     lemma_mul_is_commutative(a, m);
-    lemma_div_is_ordered((s + a) * ppm, s * ppm + a * m, m);
-    // (s*ppm + a*m)/m == s*ppm/m + a
-    lemma_hoist_over_denominator(s * ppm, a, m as nat);
+    lemma_div_is_ordered((s + a) * ppm + h, s * ppm + h + a * m, m);
+    // (s*ppm + h + a*m)/m == (s*ppm + h)/m + a
+    lemma_hoist_over_denominator(s * ppm + h, a, m as nat);
 }
 
 /// The heart of the chunking-fairness argument: one `take_fee` step preserves
