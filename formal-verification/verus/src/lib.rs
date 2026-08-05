@@ -9,5 +9,5 @@
 // Verify with:  ./verify.sh   (requires ../tools/get-tools.sh)
 
 pub mod dca;
-// pub mod mul_div;
+pub mod mul_div;
 pub mod network_fee;
