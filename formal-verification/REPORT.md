@@ -87,6 +87,13 @@ A panic/halt of the runtime, fund loss, or stuck egress can still originate in
 an uncovered subsystem. The coverage map above is the honest answer to
 "what is verified".
 
+> **Update:** AMM (abstract), ExactValue elections, and lending repay were
+> subsequently closed — see
+> [`reports/STATE_CHAIN_GAPS_CLOSED.md`](reports/STATE_CHAIN_GAPS_CLOSED.md).
+> Remaining: tick math, full interest/liquidation coupling, ingress channel
+> recycle (non-boost), trading strategies / governance / emissions.
+
+
 ## 3. Methodology
 
 ### 3.1 TLA+ / TLC

@@ -23,6 +23,7 @@ formal-verification/
 │   ├── BrokerFeeSplit.tla       take_broker_fees rounding / fund safety
 │   ├── BoostLifecycle.tla        deposit boost / finalise / loss / mismatch
 │   ├── engine/                  engine/ (multisig + retrier) models
+│   ├── state_chain_gaps/         AMM / elections / lending (gap closure)
 │   │   ├── CeremonyBroadcast.tla
 │   │   ├── BroadcastVerification.tla
 │   │   ├── Retrier.tla
@@ -40,7 +41,8 @@ formal-verification/
 │   └── verify.sh                verifies the crate; rejects assume/admit
 ├── reports/             Dedicated finding reports
 │   ├── DCA_SAME_BLOCK_DOUBLE_REFUND.md
-│   └── ENGINE_FORMAL_VERIFICATION.md
+│   ├── ENGINE_FORMAL_VERIFICATION.md
+│   └── STATE_CHAIN_GAPS_CLOSED.md
 └── conformance/         Property tests binding models to shipped code
     └── src/lib.rs               spec-conformance + differential tests
 ```
@@ -56,6 +58,9 @@ formal-verification/
 
 # 3. TLA+ (engine/ multisig + retrier models).
 ./tla/engine/check.sh
+
+# 3b. TLA+ (previously missed state-chain areas).
+./tla/state_chain_gaps/check.sh
 
 # 4. Verus: machine-check all proofs (~5 s).
 ./verus/verify.sh
