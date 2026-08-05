@@ -1,0 +1,65 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Warning: Please run the Java VM which executes TLC with a throughput optimized garbage collector by passing the "-XX:+UseParallelGC" property.
+(Use the -nowarning option to disable this warning.)
+Running breadth-first search Model-Checking with fp 92 and seed -8221284978283374472 with 1 worker on 4 cores with 4096MB heap and 64MB offheap memory [pid: 78792] (Linux 6.12.94+ amd64, Ubuntu 21.0.10 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /workspace/formal-verification/tla/SwapDcaFok.tla
+Parsing file /tmp/Naturals.tla
+Parsing file /tmp/FiniteSets.tla
+Parsing file /tmp/TLC.tla
+Parsing file /tmp/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module SwapDcaFok
+Starting... (2026-08-05 08:55:11)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-08-05 08:55:11.
+Error: Invariant InputConservation is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ accOut = 0
+/\ state = "Init"
+/\ refunded = 0
+/\ egressedOut = 0
+/\ chunkAmt = <<0, 0, 0, 0>>
+/\ panicked = FALSE
+/\ budget = 1
+/\ remChunks = 4
+/\ executedIn = 0
+/\ scheduled = {}
+/\ nextId = 1
+/\ remInput = 7
+
+State 2: <InitRequest line 90, col 5 to line 108, col 80 of module SwapDcaFok>
+/\ accOut = 0
+/\ state = "Active"
+/\ refunded = 0
+/\ egressedOut = 0
+/\ chunkAmt = <<1, 2, 0, 0>>
+/\ panicked = FALSE
+/\ budget = 1
+/\ remChunks = 2
+/\ executedIn = 0
+/\ scheduled = {1, 2}
+/\ nextId = 3
+/\ remInput = 4
+
+State 3: <DoubleFailureRefund line 180, col 5 to line 190, col 68 of module SwapDcaFok>
+/\ accOut = 0
+/\ state = "Refunded"
+/\ refunded = 6
+/\ egressedOut = 0
+/\ chunkAmt = <<1, 2, 0, 0>>
+/\ panicked = TRUE
+/\ budget = 1
+/\ remChunks = 2
+/\ executedIn = 0
+/\ scheduled = {}
+/\ nextId = 3
+/\ remInput = 0
+
+9 states generated, 7 distinct states found, 4 states left on queue.
+The depth of the complete state graph search is 3.
+The average outdegree of the complete state graph is 1 (minimum is 1, the maximum 1 and the 95th percentile is 1).
+Finished in 00s at (2026-08-05 08:55:11)

@@ -1,0 +1,19 @@
+# Standalone crate (own workspace, deliberately NOT a member of the repository
+# workspace) binding the formally verified models in ../verus and ../tla to the
+# shipped state-chain code via differential property tests. See ../REPORT.md.
+[package]
+name = "fv-conformance"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[workspace]
+
+[dependencies]
+cf-amm-math = { path = "../../state-chain/amm-math" }
+sp-core = { git = "https://github.com/chainflip-io/polkadot-sdk.git", tag = "chainflip-substrate-stable2509-2.2.7" }
+sp-arithmetic = { git = "https://github.com/chainflip-io/polkadot-sdk.git", tag = "chainflip-substrate-stable2509-2.2.7" }
+
+[dev-dependencies]
+proptest = "1"
