@@ -22,16 +22,25 @@ formal-verification/
 │   ├── SwapDcaFok.tla           DCA / fill-or-kill swap execution
 │   ├── BrokerFeeSplit.tla       take_broker_fees rounding / fund safety
 │   ├── BoostLifecycle.tla        deposit boost / finalise / loss / mismatch
+│   ├── engine/                  engine/ (multisig + retrier) models
+│   │   ├── CeremonyBroadcast.tla
+│   │   ├── BroadcastVerification.tla
+│   │   ├── Retrier.tla
+│   │   └── check.sh
 │   ├── check.sh                 runs every config (incl. expected-failure
 │   │                            "finding" configs) and the spec mutations
 │   └── mutations.sh             anti-vacuity mutation testing
-├── verus/               Verus-verified ports of state-chain arithmetic
+├── verus/               Verus-verified ports (state-chain + engine helpers)
 │   ├── src/network_fee.rs       NetworkFeeTracker::take_fee
 │   ├── src/dca.rs               DcaState chunk accounting
 │   ├── src/mul_div.rs           mul_div floor/ceil kernel (256-bit)
 │   ├── src/broker_fee.rs        take_broker_fees Permill split + overcharge witness
 │   ├── src/boost_fee.rs         boost fee attribution conservation
+│   ├── src/engine_helpers.rs    broadcast threshold + retrier sleep cap
 │   └── verify.sh                verifies the crate; rejects assume/admit
+├── reports/             Dedicated finding reports
+│   ├── DCA_SAME_BLOCK_DOUBLE_REFUND.md
+│   └── ENGINE_FORMAL_VERIFICATION.md
 └── conformance/         Property tests binding models to shipped code
     └── src/lib.rs               spec-conformance + differential tests
 ```

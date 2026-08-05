@@ -11,5 +11,6 @@
 pub mod boost_fee;
 pub mod broker_fee;
 pub mod dca;
+pub mod engine_helpers;
 pub mod mul_div;
 pub mod network_fee;
