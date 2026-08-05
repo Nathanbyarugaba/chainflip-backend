@@ -51,15 +51,20 @@ formal-verification/
 # 1. Fetch the pinned tools (TLC needs Java; Verus installs its own rustc).
 ./tools/get-tools.sh
 
-# 2. TLA+: all model checks, finding configs, and spec mutations (~1 min).
+# 2. TLA+ (state-chain models + mutations).
 ./tla/check.sh
 
-# 3. Verus: machine-check all proofs (~5 s).
+# 3. TLA+ (engine/ multisig + retrier models).
+./tla/engine/check.sh
+
+# 4. Verus: machine-check all proofs (~5 s).
 ./verus/verify.sh
 
-# 4. Conformance: differential/property tests against the real crates.
+# 5. Conformance: differential/property tests against the real crates.
 (cd conformance && cargo test)
 ```
+
+Engine report: [`reports/ENGINE_FORMAL_VERIFICATION.md`](reports/ENGINE_FORMAL_VERIFICATION.md).
 
 Everything here is additive: no existing state-chain code is modified, and
 the `verus/` and `conformance/` crates are intentionally *not* members of the
