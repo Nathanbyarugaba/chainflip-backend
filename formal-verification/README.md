@@ -21,6 +21,7 @@ formal-verification/
 │   ├── BroadcastLifecycle.tla   broadcast pallet lifecycle
 │   ├── SwapDcaFok.tla           DCA / fill-or-kill swap execution
 │   ├── BrokerFeeSplit.tla       take_broker_fees rounding / fund safety
+│   ├── BoostLifecycle.tla        deposit boost / finalise / loss / mismatch
 │   ├── check.sh                 runs every config (incl. expected-failure
 │   │                            "finding" configs) and the spec mutations
 │   └── mutations.sh             anti-vacuity mutation testing
@@ -29,6 +30,7 @@ formal-verification/
 │   ├── src/dca.rs               DcaState chunk accounting
 │   ├── src/mul_div.rs           mul_div floor/ceil kernel (256-bit)
 │   ├── src/broker_fee.rs        take_broker_fees Permill split + overcharge witness
+│   ├── src/boost_fee.rs         boost fee attribution conservation
 │   └── verify.sh                verifies the crate; rejects assume/admit
 └── conformance/         Property tests binding models to shipped code
     └── src/lib.rs               spec-conformance + differential tests

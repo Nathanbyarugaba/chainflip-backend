@@ -522,3 +522,6 @@ mod tests {
 
 #[cfg(test)]
 mod broker_probe;
+
+#[cfg(test)]
+mod boost_probe;

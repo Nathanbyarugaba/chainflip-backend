@@ -60,6 +60,15 @@ run_mutation SwapDcaFok.tla SwapDcaFok.cfg \
 	"refund drops remaining input" \
 	's/refunded + chunkAmt\[id\] + remInput + cancelled/refunded + chunkAmt[id] + cancelled/'
 
+# 4. Boost lifecycle: allow Finalise to also credit the user again (double credit
+#    on the happy path — must be caught by NoDoubleCredit).
+run_mutation BoostLifecycle.tla BoostLifecycle.cfg \
+	"Invariant NoDoubleCredit is violated" \
+	"finalise also re-credits user" \
+	'/^Finalise(id) ==/,/^[[:space:]]*\/\\ UNCHANGED <<boostAmt, userCredit, boosterLosses>>/{
+		s/UNCHANGED <<boostAmt, userCredit, boosterLosses>>/userCredit'"'"' = [userCredit EXCEPT ![id] = userCredit[id] + boostAmt[id]]\n    \/\\ UNCHANGED <<boostAmt, boosterLosses>>/
+	}'
+
 if [[ ${fail} -eq 0 ]]; then
 	echo "mutations.sh: all mutations caught"
 else

@@ -22,14 +22,14 @@ across every reachable interleaving of the modelled configurations.
 Three of the state chain's most safety-critical arithmetic components —
 **`NetworkFeeTracker::take_fee`**, **`DcaState`** chunk accounting, and the
 AMM **`mul_div`** floor/ceil kernel — were ported to Verus and **proven
-correct and panic-free** (56 verified items, 0 errors, no `assume`/`admit`),
+correct and panic-free** (63 verified items, 0 errors, no `assume`/`admit`),
 including a chunking-fairness theorem (DCA chunking pays exactly the lump-sum
 network fee) and a no-dust theorem (floor division strands no input).
 
-The exercise also produced **three concrete findings** — code paths where the
+The exercise also produced **four concrete findings** — code paths where the
 implementation can violate the intended properties — each demonstrated by a
 model-checker counterexample and traced back to specific source lines
-(§6.1–§6.3), plus lower-severity observations (§6.4), one of which
+(§6.1–§6.4), plus lower-severity observations (§6.5), one of which
 (the `Permill` rounding mode) was caught by the conformance suite disagreeing
 with an initially-plausible reading of the code.
 
@@ -70,6 +70,7 @@ verification means in practice — and what was done here — is:
 | `DcaState` (`new` / `calculate_next_chunk` / `record_scheduled_chunk` / `record_chunk_completion`) | `verus/src/dca.rs` | code |
 | `mul_div` floor/ceil kernel (contract of `cf-amm-math::mul_div_floor_ceil` and the `*_checked` wrappers) | `verus/src/mul_div.rs` | code |
 | Broker fee split (`take_broker_fees` / `validate_broker_fees`) | `tla/BrokerFeeSplit.tla` + `verus/src/broker_fee.rs` | design + code |
+| Deposit boosting lifecycle (prewitness / finalise / loss / amount mismatch) | `tla/BoostLifecycle.tla` + `verus/src/boost_fee.rs` | design + code |
 
 ### Not covered (explicitly out of scope)
 
@@ -221,9 +222,9 @@ catches it:
 | Broadcast: start attempt without registering a timeout | `AttemptHasTimeout` | caught |
 | Swap DCA: refund omits `remaining_input` | `InputConservation` | caught |
 
-### 4.5 Verus (`verus/`, 56 verified, 0 errors)
+### 4.5 Verus (`verus/`, 63 verified, 0 errors)
 
-`./verus/verify.sh` reports `verification results:: 56 verified, 0 errors`
+`./verus/verify.sh` reports `verification results:: 63 verified, 0 errors`
 and rejects any `assume` / `admit` / `external_body`.
 
 #### `network_fee.rs` — port of `NetworkFeeTracker::take_fee`
@@ -300,12 +301,31 @@ overcharge (Σ=4>3).
 **Conformance:** exhaustive equal-split scan + 4096 random validated splits
 never exceed amount; witness and under-collect observations locked in tests.
 
+
+### 4.8 Deposit boosting (`tla/BoostLifecycle.tla` + `verus/src/boost_fee.rs`)
+
+Models prewitness-boost → finalise / loss, plus the amount-mismatch path in
+`process_full_witness_deposit_inner` (~3159).
+
+| Config | Outcome | States (distinct) |
+|---|---|---|
+| `BoostLifecycle.cfg` (mismatch disabled) | pass | 289 |
+| `BoostLifecycleFinding.cfg` (mismatch enabled) | **expected fail** — `NoDoubleCredit` | (see §6.4) |
+
+**Invariants (mainline):** `BoosterConservation`, `LockedCoversOpenBoosts`,
+`NoDoubleCredit`, `UserCreditBoundedByDeposit`, `NoMismatchPath`.
+
+**Verus:** `fee_from_boosted_amount` + `theorem_attribution_conserves` —
+the lending/boost fee attribution step cannot create or destroy value.
+
+**Conformance:** `reported_amounts_sum_to_deposit` (8192 cases).
+
 ## 5. How to reproduce
 
 ```bash
 ./tools/get-tools.sh          # once; downloads pinned TLC + Verus
-./tla/check.sh                # ~25 s: 9 mainline + 3 findings + 3 mutations
-./verus/verify.sh             # ~4 s: 56 verified, 0 errors
+./tla/check.sh                # ~25 s: 10 mainline + 4 findings + 4 mutations
+./verus/verify.sh             # ~4 s: 63 verified, 0 errors
 (cd conformance && cargo test)  # 13 tests; ~1 s once built
 ```
 
@@ -427,7 +447,51 @@ to split rounding (see §6.4).
 total; (c) preferably charge `Permill(total_bps) * amount` once and
 distribute by weight to eliminate split-rounding drift.
 
-### 6.4 Observations (lower severity / documentation)
+
+### 6.4 Finding: boosted deposit full-witnessed at a different amount double-credits the user
+
+**Severity:** High *if* a full-witness amount can differ from the boosted
+amount for the same deposit identity (channel boost_status / vault tx_id).
+Under normal CFE behaviour the amounts match; the risk is a divergent
+witness, a second deposit of a different size on an already-boosted channel
+before the first is finalised, or any bug that reports a different amount.
+
+**Property violated:** `NoDoubleCredit` — a deposit identity must not credit
+the user twice while a boost remains open.
+
+**Reproduction:** `tla/BoostLifecycleFinding.cfg` — TLC reports
+`Invariant NoDoubleCredit is violated` with a short trace:
+Boost(id, 2) → MismatchCredit(id, 3) → `userCredit = 5`, status
+`DoubleCredited`, boost still locked. A subsequent `LoseAfterMismatch`
+has boosters absorb the original 2 while the user keeps both credits.
+
+**Root cause:** in `cf-ingress-egress/src/lib.rs` ~3159–3171,
+
+```rust
+BoostStatus::Boosted { prewitnessed_deposit_id, amount }
+    if amount == deposit_amount => ActionToPerform::FinaliseBoost { .. },
+// ...
+_ => ActionToPerform::PerformChannelAction {
+    deposit_outcome: FullWitnessDepositOutcome::BoostNotConsumed,
+},
+```
+
+On amount mismatch the deposit is processed as a **fresh non-boosted
+deposit** (user credited again) and `boost_status` is **not** cleared
+(only `BoostConsumed` clears it, ~2645 / ~3402). The original boost can
+later be finalised (if a matching amount eventually arrives) or marked
+lost (recycle / vault timeout) — in the loss case boosters pay while the
+user retains the boost-time credit *and* the mismatched full-witness credit.
+
+**Suggested fix:** on `Boosted` with amount mismatch, either (a) refuse the
+witness / emit `DepositFailed` and leave boost open, (b) treat as
+finalisation of the boost *and* a separate residual/excess deposit only
+for the delta, or (c) clear/cancel the boost before processing as
+non-boosted (so boosters are not left exposed). Also consider matching on
+`tx_id` / deposit id rather than amount alone for channels that can receive
+multiple deposits.
+
+### 6.5 Observations (lower severity / documentation)
 
 1. **`Permill` rounds to nearest, ties down — not floor.** The initial Verus
    port assumed `floor(x · ppm / 10⁶)`. The conformance differential test
@@ -490,6 +554,6 @@ assumptions; the critical fee / DCA / mul-div arithmetic is **proven correct
 and panic-free**, and the proofs are bound to the shipped code by a
 drift-checked conformance suite.
 
-Three concrete issues were found and are documented with TLC counterexamples
-and source-level root causes (§6.1–§6.3); fixing them is left as follow-up
+Four concrete issues were found and are documented with TLC counterexamples
+and source-level root causes (§6.1–§6.4); fixing them is left as follow-up
 work so this PR remains a pure verification deliverable.
