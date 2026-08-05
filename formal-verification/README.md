@@ -20,6 +20,7 @@ formal-verification/
 │   ├── AuthorityRotation.tla    authority/key rotation state machine
 │   ├── BroadcastLifecycle.tla   broadcast pallet lifecycle
 │   ├── SwapDcaFok.tla           DCA / fill-or-kill swap execution
+│   ├── BrokerFeeSplit.tla       take_broker_fees rounding / fund safety
 │   ├── check.sh                 runs every config (incl. expected-failure
 │   │                            "finding" configs) and the spec mutations
 │   └── mutations.sh             anti-vacuity mutation testing
@@ -27,6 +28,7 @@ formal-verification/
 │   ├── src/network_fee.rs       NetworkFeeTracker::take_fee
 │   ├── src/dca.rs               DcaState chunk accounting
 │   ├── src/mul_div.rs           mul_div floor/ceil kernel (256-bit)
+│   ├── src/broker_fee.rs        take_broker_fees Permill split + overcharge witness
 │   └── verify.sh                verifies the crate; rejects assume/admit
 └── conformance/         Property tests binding models to shipped code
     └── src/lib.rs               spec-conformance + differential tests

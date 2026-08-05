@@ -519,3 +519,6 @@ mod tests {
         assert_eq!(pallet.calculate_next_chunk_pub(), Some(0));
     }
 }
+
+#[cfg(test)]
+mod broker_probe;

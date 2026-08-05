@@ -22,14 +22,14 @@ across every reachable interleaving of the modelled configurations.
 Three of the state chain's most safety-critical arithmetic components —
 **`NetworkFeeTracker::take_fee`**, **`DcaState`** chunk accounting, and the
 AMM **`mul_div`** floor/ceil kernel — were ported to Verus and **proven
-correct and panic-free** (50 verified items, 0 errors, no `assume`/`admit`),
+correct and panic-free** (56 verified items, 0 errors, no `assume`/`admit`),
 including a chunking-fairness theorem (DCA chunking pays exactly the lump-sum
 network fee) and a no-dust theorem (floor division strands no input).
 
-The exercise also produced **two concrete findings** — code paths where the
+The exercise also produced **three concrete findings** — code paths where the
 implementation can violate the intended properties — each demonstrated by a
 model-checker counterexample and traced back to specific source lines
-(§6.1, §6.2), plus several lower-severity observations (§6.3), one of which
+(§6.1–§6.3), plus lower-severity observations (§6.4), one of which
 (the `Permill` rounding mode) was caught by the conformance suite disagreeing
 with an initially-plausible reading of the code.
 
@@ -69,6 +69,7 @@ verification means in practice — and what was done here — is:
 | `NetworkFeeTracker::take_fee` (network fee accrual incl. minimum-fee logic and `Permill` rounding) | `verus/src/network_fee.rs` | code |
 | `DcaState` (`new` / `calculate_next_chunk` / `record_scheduled_chunk` / `record_chunk_completion`) | `verus/src/dca.rs` | code |
 | `mul_div` floor/ceil kernel (contract of `cf-amm-math::mul_div_floor_ceil` and the `*_checked` wrappers) | `verus/src/mul_div.rs` | code |
+| Broker fee split (`take_broker_fees` / `validate_broker_fees`) | `tla/BrokerFeeSplit.tla` + `verus/src/broker_fee.rs` | design + code |
 
 ### Not covered (explicitly out of scope)
 
@@ -220,9 +221,9 @@ catches it:
 | Broadcast: start attempt without registering a timeout | `AttemptHasTimeout` | caught |
 | Swap DCA: refund omits `remaining_input` | `InputConservation` | caught |
 
-### 4.5 Verus (`verus/`, 50 verified, 0 errors)
+### 4.5 Verus (`verus/`, 56 verified, 0 errors)
 
-`./verus/verify.sh` reports `verification results:: 50 verified, 0 errors`
+`./verus/verify.sh` reports `verification results:: 56 verified, 0 errors`
 and rejects any `assume` / `admit` / `external_body`.
 
 #### `network_fee.rs` — port of `NetworkFeeTracker::take_fee`
@@ -277,13 +278,35 @@ suite checks against the real U256 functions.
 | `dca_state_copy_matches_pallet_source` | drift check (byte-identical) |
 | `zero_amount_chunks_are_scheduled` | documents observation §6.3 |
 
+
+### 4.7 Broker fee split (`tla/BrokerFeeSplit.tla` + `verus/src/broker_fee.rs`)
+
+Models `take_broker_fees` with substrate's `Permill` nearest-ties-down
+rounding (`floor((amount · bps · 100 + 499999) / 10⁶)`).
+
+| Config | Outcome | States (distinct) |
+|---|---|---|
+| `BrokerFeeSplit.cfg` (amounts 0..200, equal splits, Σbps ≤ 1000, n ≤ 6) | pass | 493,656 |
+| `BrokerFeeSplitFinding.cfg` (also equal 100% splits) | **expected fail** — `NoOverchargeOnAllModes` | (see §6.3) |
+
+**Invariants checked (mainline):** `NoOverchargeValidated` (Σ fees ≤ amount
+under production validation), `RoundingInflationBound`,
+`UnvalidatedOverchargeExists` (tautology when unvalidated mode is off).
+
+**Verus:** `fee_of` proven equal to `mul_ppm` / `Permill` mul and ≤ amount;
+`theorem_unvalidated_overcharge_witness` proves the concrete 4×2500 @ amount=3
+overcharge (Σ=4>3).
+
+**Conformance:** exhaustive equal-split scan + 4096 random validated splits
+never exceed amount; witness and under-collect observations locked in tests.
+
 ## 5. How to reproduce
 
 ```bash
 ./tools/get-tools.sh          # once; downloads pinned TLC + Verus
-./tla/check.sh                # ~20 s: 8 mainline + 2 findings + 3 mutations
-./verus/verify.sh             # ~4 s: 50 verified, 0 errors
-(cd conformance && cargo test)  # ~1 s once built
+./tla/check.sh                # ~25 s: 9 mainline + 3 findings + 3 mutations
+./verus/verify.sh             # ~4 s: 56 verified, 0 errors
+(cd conformance && cargo test)  # 13 tests; ~1 s once built
 ```
 
 ## 6. Findings and observations
@@ -367,7 +390,44 @@ before deleting the request. The existing `log_or_panic!`s indicate the
 authors considered these states unreachable; the model shows they are not
 when `chunk_interval == 1`.
 
-### 6.3 Observations (lower severity / documentation)
+
+### 6.3 Finding: broker-fee split can overcharge (assert!-panic) if unvalidated
+
+**Severity:** Medium as a defense-in-depth / halt risk; **Low for direct
+fund theft under current callers** because `validate_broker_fees` enforces
+`total_bps ≤ 1000` (and TLC + proptest prove that under that ceiling with
+n ≤ 6, Σ nearest-rounded fees never exceeds `amount`).
+
+**Property violated (without validation):** `NoOverchargeOnAllModes` —
+Σ per-beneficiary `Permill(bps_i) * amount` ≤ amount.
+
+**Reproduction:**
+- TLC: `tla/BrokerFeeSplitFinding.cfg`
+- Verus witness: `theorem_unvalidated_overcharge_witness` (4 × 2500 bps,
+  amount = 3 → fees 1+1+1+1 = 4 > 3)
+- Conformance: `unvalidated_equal_split_overcharge_witness`
+
+**Root cause:** `take_broker_fees` charges each beneficiary independently
+with nearest rounding, then `assert!(total_fee <= stable_amount)` — after
+already calling `credit_account` for each fee. Its own early-return gate
+only fires when `total_bps > 10000`, while `validate_broker_fees` uses
+`total_bps ≤ 1000`. If any caller ever passes beneficiaries in the
+`(1000, 10000]` band into `init_swap_request` (which does **not**
+re-validate), the assert can fire and halt the chain. Because credits
+precede the assert, a transactional rollback of the surrounding hook is
+the only reason this would not also mint unbacked USDC free-balances.
+
+**Under production validation** the overcharge-beyond-amount path is
+unreachable (493k-state TLC proof + proptest). Brokers can still be
+over- or under-paid by a few units vs a single `Permill(total_bps)` due
+to split rounding (see §6.4).
+
+**Suggested fix:** (a) re-validate fees inside `take_broker_fees` /
+`init_swap_request`; (b) credit brokers only after computing the capped
+total; (c) preferably charge `Permill(total_bps) * amount` once and
+distribute by weight to eliminate split-rounding drift.
+
+### 6.4 Observations (lower severity / documentation)
 
 1. **`Permill` rounds to nearest, ties down — not floor.** The initial Verus
    port assumed `floor(x · ppm / 10⁶)`. The conformance differential test
@@ -397,6 +457,11 @@ when `chunk_interval == 1`.
    validator-level `ActivatingKeys → NewKeysActivated` transition still
    requires *all* chains to report `RotationComplete`.
 
+6. **Broker fee split can under-collect.** `amount=10`, two×500 bps →
+   fees 0+0, while `Permill(1000)*10 = 1`. Brokers receive less than the
+   combined rate; the user keeps the unit. Locked in
+   `split_can_undercollect_vs_combined`.
+
 ## 7. Limitations and future work
 
 - **CI wiring.** `tla/check.sh`, `verus/verify.sh`, and
@@ -425,6 +490,6 @@ assumptions; the critical fee / DCA / mul-div arithmetic is **proven correct
 and panic-free**, and the proofs are bound to the shipped code by a
 drift-checked conformance suite.
 
-Two concrete issues were found and are documented with TLC counterexamples
-and source-level root causes (§6.1, §6.2); fixing them is left as follow-up
+Three concrete issues were found and are documented with TLC counterexamples
+and source-level root causes (§6.1–§6.3); fixing them is left as follow-up
 work so this PR remains a pure verification deliverable.

@@ -58,11 +58,13 @@ expect_pass BroadcastLifecycle.tla BroadcastLifecycleLiveness.cfg
 expect_pass SwapDcaFok.tla SwapDcaFok.cfg
 expect_pass SwapDcaFok.tla SwapDcaFokTwoInFlight.cfg
 expect_pass SwapDcaFok.tla SwapDcaFokLiveness.cfg
+expect_pass BrokerFeeSplit.tla BrokerFeeSplit.cfg
 
 echo
 echo "== Finding configurations (must fail with the documented violation) =="
 expect_violation BroadcastLifecycle.tla BroadcastLifecycleSigningFailure.cfg BarrierBacked
 expect_violation SwapDcaFok.tla SwapDcaFokDoubleFailure.cfg InputConservation
+expect_violation BrokerFeeSplit.tla BrokerFeeSplitFinding.cfg NoOverchargeOnAllModes
 
 echo
 echo "== Spec mutations (anti-vacuity, must be caught) =="
