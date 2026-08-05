@@ -1266,3 +1266,178 @@ fn dca_with_one_block_interval_with_network_fee_minimum() {
 			assert_eq!(CollectedNetworkFee::<Test>::get(), NETWORK_FEE_MINIMUM + expected_fee);
 		});
 }
+
+/// Proof test for Finding §6.2 (DCA same-block double-refund fund loss).
+///
+/// Full write-up: `formal-verification/reports/DCA_SAME_BLOCK_DOUBLE_REFUND.md`.
+///
+/// Reachability:
+///   1. `chunk_interval == 1` schedules two chunks in flight; after chunk 1
+///      succeeds, chunk 2 and chunk 3 are both outstanding.
+///   2. Align both remaining chunks onto the same `execute_at` (as happens
+///      whenever multiple same-request chunks satisfy `execute_at <= now`
+///      in one `on_finalize` — e.g. caught-up blocks).
+///   3. Crash the swap rate with FoK `retry_duration == 0` so both take the
+///      refund path in that same batch.
+///
+/// Bug: both swaps were already taken out of `ScheduledSwaps` for the batch,
+/// so the first `refund_failed_swap` cannot recover the sibling
+/// (`cancel_swap` → `log_or_panic!`), and the second finds the
+/// `SwapRequest` already deleted. One chunk's input is never refunded.
+///
+/// Run in **release** to observe the numeric loss (`log_or_panic!` only logs):
+/// ```
+/// cargo test -p pallet-cf-swapping --features proptest --release \
+///     proof_dca_same_block_double_refund_loses_funds
+/// ```
+#[test]
+fn proof_dca_same_block_double_refund_loses_funds() {
+	const ONE_BLOCK_CHUNK_INTERVAL: u32 = 1;
+	const NUMBER_OF_CHUNKS: u32 = 4;
+	const CHUNK_AMOUNT: AssetAmount = INPUT_AMOUNT / NUMBER_OF_CHUNKS as u128;
+	const CHUNK_BROKER_FEE: AssetAmount = CHUNK_AMOUNT * BROKER_FEE_BPS as u128 / 10_000;
+	const CHUNK_AMOUNT_AFTER_FEE: AssetAmount = CHUNK_AMOUNT - CHUNK_BROKER_FEE;
+	const CHUNK_OUTPUT: AssetAmount = CHUNK_AMOUNT_AFTER_FEE * DEFAULT_SWAP_RATE;
+	const CHUNK_1_BLOCK: u64 = INIT_BLOCK + SWAP_DELAY_BLOCKS as u64;
+	const DOUBLE_REFUND_BLOCK: u64 = CHUNK_1_BLOCK + 1;
+
+	assert_eq!(SWAP_DELAY_BLOCKS, 2);
+	assert_eq!(INPUT_AMOUNT % NUMBER_OF_CHUNKS as u128, 0);
+
+	// In debug, log_or_panic! panics inside cancel_swap — see companion test.
+	if cfg!(debug_assertions) {
+		return;
+	}
+
+	new_test_ext()
+		.execute_with(|| {
+			NetworkFee::<Test>::set(FeeRateAndMinimum {
+				rate: Permill::zero(),
+				minimum: 0,
+			});
+
+			insert_swaps(&[TestSwapParams::new(
+				Some(DcaParameters {
+					number_of_chunks: NUMBER_OF_CHUNKS,
+					chunk_interval: ONE_BLOCK_CHUNK_INTERVAL,
+				}),
+				Some(TestRefundParams {
+					retry_duration: 0,
+					min_output: CHUNK_OUTPUT,
+				}),
+				false,
+			)]);
+		})
+		.then_process_blocks_until_block(CHUNK_1_BLOCK)
+		.then_execute_with(|_| {
+			assert_has_matching_event!(
+				Test,
+				RuntimeEvent::Swapping(Event::SwapExecuted { swap_id: SwapId(1), .. })
+			);
+			// Two chunks outstanding after chunk 1 (chunk 2 from init, chunk 3
+			// just scheduled). Align both onto the next block so they share one
+			// on_finalize batch — the condition `execute_at <= current`.
+			assert!(get_scheduled_swap_block(SwapId(2)).is_some());
+			assert!(get_scheduled_swap_block(SwapId(3)).is_some());
+			ScheduledSwaps::<Test>::mutate(|swaps| {
+				for id in [SwapId(2), SwapId(3)] {
+					if let Some(s) = swaps.get_mut(&id) {
+						s.execute_at = DOUBLE_REFUND_BLOCK;
+						// FoK refund_block was baked in at schedule time from the
+						// old execute_at; refresh it so retry_duration == 0 still
+						// means "refund on first failure at the new execute_at".
+						if let Some(ref mut rp) = s.refund_params {
+							rp.refund_block = DOUBLE_REFUND_BLOCK as u32;
+						}
+					}
+				}
+			});
+			assert_eq!(get_scheduled_swap_block(SwapId(2)), Some(DOUBLE_REFUND_BLOCK));
+			assert_eq!(get_scheduled_swap_block(SwapId(3)), Some(DOUBLE_REFUND_BLOCK));
+
+			SwapRate::set(0.1);
+		})
+		.then_process_blocks_until_block(DOUBLE_REFUND_BLOCK)
+		.then_execute_with(|_| {
+			assert_eq!(SwapRequests::<Test>::get(SWAP_REQUEST_ID), None);
+			assert_swaps_queue_is_empty();
+
+			assert_has_matching_event!(
+				Test,
+				RuntimeEvent::Swapping(Event::SwapEgressScheduled {
+					swap_request_id: SWAP_REQUEST_ID,
+					amount: CHUNK_OUTPUT,
+					..
+				})
+			);
+
+			let refunded: AssetAmount = frame_system::Pallet::<Test>::events()
+				.into_iter()
+				.filter_map(|r| match r.event {
+					RuntimeEvent::Swapping(Event::RefundEgressScheduled {
+						swap_request_id,
+						amount,
+						..
+					}) if swap_request_id == SWAP_REQUEST_ID => Some(amount),
+					_ => None,
+				})
+				.sum();
+
+			// After chunk 1: remaining_input = 1 chunk, scheduled = {2,3}.
+			// First refund recovers chunk2 + remaining (= 2 chunks), fails to
+			// cancel chunk3; second refund is a no-op. Lost = 1 chunk.
+			assert_eq!(refunded, CHUNK_AMOUNT * 2, "unexpected refunded amount {refunded}");
+			let recovered = CHUNK_AMOUNT + refunded;
+			assert!(recovered < INPUT_AMOUNT);
+			assert_eq!(INPUT_AMOUNT - recovered, CHUNK_AMOUNT);
+		});
+}
+
+/// Debug-build companion: the double-refund interleaving hits `log_or_panic!`
+/// inside `cancel_swap` (sibling already removed from `ScheduledSwaps`).
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "Attempted to cancel swap")]
+fn proof_dca_same_block_double_refund_debug_panics() {
+	const ONE_BLOCK_CHUNK_INTERVAL: u32 = 1;
+	const NUMBER_OF_CHUNKS: u32 = 4;
+	const CHUNK_AMOUNT: AssetAmount = INPUT_AMOUNT / NUMBER_OF_CHUNKS as u128;
+	const CHUNK_BROKER_FEE: AssetAmount = CHUNK_AMOUNT * BROKER_FEE_BPS as u128 / 10_000;
+	const CHUNK_OUTPUT: AssetAmount = (CHUNK_AMOUNT - CHUNK_BROKER_FEE) * DEFAULT_SWAP_RATE;
+	const CHUNK_1_BLOCK: u64 = INIT_BLOCK + SWAP_DELAY_BLOCKS as u64;
+	const DOUBLE_REFUND_BLOCK: u64 = CHUNK_1_BLOCK + 1;
+
+	new_test_ext()
+		.execute_with(|| {
+			NetworkFee::<Test>::set(FeeRateAndMinimum {
+				rate: Permill::zero(),
+				minimum: 0,
+			});
+			insert_swaps(&[TestSwapParams::new(
+				Some(DcaParameters {
+					number_of_chunks: NUMBER_OF_CHUNKS,
+					chunk_interval: ONE_BLOCK_CHUNK_INTERVAL,
+				}),
+				Some(TestRefundParams { retry_duration: 0, min_output: CHUNK_OUTPUT }),
+				false,
+			)]);
+		})
+		.then_process_blocks_until_block(CHUNK_1_BLOCK)
+		.then_execute_with(|_| {
+			ScheduledSwaps::<Test>::mutate(|swaps| {
+				for id in [SwapId(2), SwapId(3)] {
+					if let Some(s) = swaps.get_mut(&id) {
+						s.execute_at = DOUBLE_REFUND_BLOCK;
+						if let Some(ref mut rp) = s.refund_params {
+							rp.refund_block = DOUBLE_REFUND_BLOCK as u32;
+						}
+					}
+				}
+			});
+			SwapRate::set(0.1);
+		})
+		.then_process_blocks_until_block(DOUBLE_REFUND_BLOCK)
+		.then_execute_with(|_| {
+			// Unreachable: on_finalize panics during the double-refund.
+		});
+}

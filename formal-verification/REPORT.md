@@ -372,6 +372,10 @@ made in this PR; this report is the deliverable.
 
 ### 6.2 Finding: same-block double-chunk refund drops funds
 
+> **Full dedicated report + code proof:**
+> [`formal-verification/reports/DCA_SAME_BLOCK_DOUBLE_REFUND.md`](reports/DCA_SAME_BLOCK_DOUBLE_REFUND.md)
+> Pallet tests: `proof_dca_same_block_double_refund_*` in `cf-swapping` `tests/dca.rs`.
+
 **Severity:** High if reachable in production (fund loss); reachability
 requires `chunk_interval == 1` (two chunks of the same request due in the
 same block) *and* both chunks failing a fill-or-kill check after their
